@@ -51,11 +51,14 @@ class TranscriptEntry {
 }
 
 enum LeadStep {
-  /// Fetching the vendor's questionnaire.
+  /// Fetching the vendor.
   loading,
 
-  /// Questionnaire could not be loaded; see [LeadChatState.error].
+  /// Vendor could not be loaded; see [LeadChatState.error].
   loadFailed,
+
+  /// Showing the vendor's menu (its chosen automation scenarios).
+  menu,
   askName,
   askEmail,
 
@@ -69,6 +72,10 @@ enum LeadStep {
 
 class LeadChatState {
   final LeadStep step;
+  final VendorModel? vendor;
+
+  /// Menu item the visitor last picked.
+  final String? selectedMenuId;
   final LeadQuestionnaire? questionnaire;
   final int questionIndex;
   final String? name;
@@ -84,6 +91,8 @@ class LeadChatState {
 
   const LeadChatState({
     this.step = LeadStep.loading,
+    this.vendor,
+    this.selectedMenuId,
     this.questionnaire,
     this.questionIndex = 0,
     this.name,
@@ -119,6 +128,8 @@ class LeadChatState {
 
   LeadChatState copyWith({
     LeadStep? step,
+    VendorModel? vendor,
+    String? selectedMenuId,
     LeadQuestionnaire? questionnaire,
     int? questionIndex,
     String? name,
@@ -130,6 +141,8 @@ class LeadChatState {
     bool clearError = false,
   }) => LeadChatState(
     step: step ?? this.step,
+    vendor: vendor ?? this.vendor,
+    selectedMenuId: selectedMenuId ?? this.selectedMenuId,
     questionnaire: questionnaire ?? this.questionnaire,
     questionIndex: questionIndex ?? this.questionIndex,
     name: name ?? this.name,
@@ -143,6 +156,8 @@ class LeadChatState {
   /// What survives a reload. Transient flags ([busy], [error]) are dropped.
   Map<String, dynamic> toJson() => {
     'step': step.name,
+    if (vendor != null) 'vendor': vendor!.toJson(),
+    if (selectedMenuId != null) 'selectedMenuId': selectedMenuId,
     if (questionnaire != null) 'questionnaire': questionnaire!.toJson(),
     'questionIndex': questionIndex,
     if (name != null) 'name': name,
@@ -152,6 +167,7 @@ class LeadChatState {
   };
 
   factory LeadChatState.fromJson(Map<String, dynamic> json) {
+    final rawVendor = json['vendor'];
     final rawQ = json['questionnaire'];
     final rawSession = json['session'];
     final rawEntries = json['entries'];
@@ -160,6 +176,10 @@ class LeadChatState {
         (s) => s.name == json['step'],
         orElse: () => LeadStep.loading,
       ),
+      vendor: rawVendor is Map
+          ? VendorModel.fromJson(Map<String, dynamic>.from(rawVendor))
+          : null,
+      selectedMenuId: json['selectedMenuId']?.toString(),
       questionnaire: rawQ is Map
           ? LeadQuestionnaire.fromJson(Map<String, dynamic>.from(rawQ))
           : null,

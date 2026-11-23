@@ -9,18 +9,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'lead_chat_controller_test.dart' show FakeLeadService, FakeLiveChannel;
 
 void main() {
-  testWidgets('renders the questionnaire and answers by tapping', (
-    tester,
-  ) async {
+  late FakeLeadService service;
+  late LeadChatController controller;
+
+  Future<void> pumpChat(WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
-    final service = FakeLeadService();
-    final controller = LeadChatController(
-      vendorId: 'acme',
+    service = FakeLeadService();
+    controller = LeadChatController(
+      vendorUrlName: 'VendorOne',
       service: service,
       live: FakeLiveChannel(),
       store: LeadStore(),
     );
-
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -30,9 +30,49 @@ void main() {
       ),
     );
     await tester.runAsync(controller.init);
-    await tester.pump();
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('shows the vendor name and menu in the chat', (tester) async {
+    await pumpChat(tester);
 
     expect(find.text('Acme'), findsOneWidget);
+    expect(find.text(LeadCopy.menuGreeting('Acme')), findsOneWidget);
+    expect(find.text('Answer Questions'), findsOneWidget);
+    expect(find.text('Quick answers.'), findsOneWidget);
+    expect(find.text('Book a demo'), findsOneWidget);
+
+    await tester.tap(find.text('Book a demo'));
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedMenuId, 'book_demo');
+    // The pick shows as the visitor's message; the menu stays available.
+    expect(find.text('Book a demo'), findsNWidgets(2));
+  });
+
+  testWidgets('drop-up menu lists the vendor items', (tester) async {
+    await pumpChat(tester);
+
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    expect(find.byType(MenuItemButton), findsNWidgets(3));
+    expect(find.text('Start over'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(MenuItemButton),
+        matching: find.text('Answer Questions'),
+      ),
+    );
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    expect(controller.state.selectedMenuId, 'entity_chat_questions');
+  });
+
+  testWidgets('questionnaire renders and answers by tapping', (tester) async {
+    await pumpChat(tester);
+    await tester.runAsync(controller.startQuestionnaire);
+    await tester.pumpAndSettle();
     expect(find.text(LeadCopy.askName), findsOneWidget);
 
     Future<void> type(String text) async {

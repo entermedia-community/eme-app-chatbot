@@ -45,8 +45,28 @@ LeadQuestionnaire _questionnaire() => LeadQuestionnaire.fromJson({
   ],
 });
 
+const vendorOne = VendorModel(
+  id: 'V1',
+  name: 'Acme',
+  urlName: 'VendorOne',
+  menu: [
+    VendorMenuItem(
+      id: 'entity_chat_questions',
+      name: 'Answer Questions',
+      description: 'Quick answers.',
+      icon: 'broadcast',
+      chatEnabled: true,
+    ),
+    VendorMenuItem(id: 'book_demo', name: 'Book a demo', icon: 'calendar'),
+  ],
+);
+
 class FakeLeadService implements ILeadService {
   final answers = <String, dynamic>{};
+  VendorModel vendor = vendorOne;
+  Object? vendorError;
+  String? requestedUrlName;
+  String? questionnaireVendorId;
   Object? fetchError;
   Object? answerError;
   bool? consent;
@@ -55,7 +75,15 @@ class FakeLeadService implements ILeadService {
   List<ChatMessage> history = [];
 
   @override
+  Future<VendorModel> fetchVendor(String urlName) async {
+    requestedUrlName = urlName;
+    if (vendorError != null) throw vendorError!;
+    return vendor;
+  }
+
+  @override
   Future<LeadQuestionnaire> fetchQuestionnaire(String vendorId) async {
+    questionnaireVendorId = vendorId;
     if (fetchError != null) throw fetchError!;
     return _questionnaire();
   }
@@ -139,8 +167,8 @@ void main() {
     live = FakeLiveChannel();
   });
 
-  LeadChatController make({String vendorId = 'acme'}) => LeadChatController(
-    vendorId: vendorId,
+  LeadChatController make({String urlName = 'VendorOne'}) => LeadChatController(
+    vendorUrlName: urlName,
     service: service,
     live: live,
     store: LeadStore(),
@@ -149,11 +177,84 @@ void main() {
   List<String> texts(LeadChatController c) =>
       c.state.entries.map((e) => e.text).toList();
 
+  test('opens on the vendor menu', () async {
+    final c = make();
+    await c.init();
+    expect(service.requestedUrlName, 'VendorOne');
+    expect(c.state.step, LeadStep.menu);
+    expect(c.state.vendor!.menu.map((m) => m.name), [
+      'Answer Questions',
+      'Book a demo',
+    ]);
+    expect(texts(c), [LeadCopy.menuGreeting('Acme')]);
+    expect(c.state.acceptsText, isFalse);
+  });
+
+  test('picking a menu item records it and survives a reload', () async {
+    final c = make();
+    await c.init();
+    c.selectMenuItem(vendorOne.menu.last);
+    await settle();
+    expect(c.state.selectedMenuId, 'book_demo');
+    expect(texts(c).last, 'Book a demo');
+    c.dispose();
+
+    final again = make();
+    await again.init();
+    expect(again.state.step, LeadStep.menu);
+    expect(again.state.selectedMenuId, 'book_demo');
+    expect(again.state.entries, hasLength(2));
+  });
+
+  test('reload picks up menu changes from the server', () async {
+    final c = make();
+    await c.init();
+    c.dispose();
+
+    service.vendor = const VendorModel(
+      id: 'V1',
+      name: 'Acme',
+      urlName: 'VendorOne',
+      menu: [VendorMenuItem(id: 'new', name: 'New option')],
+    );
+    final again = make();
+    await again.init();
+    expect(again.state.vendor!.menu.single.name, 'New option');
+  });
+
+  test('vendor with no menu gets a fallback line, not fake items', () async {
+    service.vendor = const VendorModel(id: 'V2', name: 'Bare', urlName: 'b');
+    final c = make(urlName: 'b');
+    await c.init();
+    expect(c.state.vendor!.menu, isEmpty);
+    expect(texts(c), [LeadCopy.menuGreeting('Bare'), LeadCopy.emptyMenu]);
+  });
+
+  test('unknown vendor fails with the server message and can retry', () async {
+    service.vendorError = const LeadServiceException(
+      'fetchVendor failed: vendor not found',
+    );
+    final c = make();
+    await c.init();
+    expect(c.state.step, LeadStep.loadFailed);
+    expect(c.state.error, contains('vendor not found'));
+
+    service.vendorError = null;
+    await c.retry();
+    expect(c.state.step, LeadStep.menu);
+  });
+
   test('walks name → email → questions → consent → chat', () async {
     final c = make();
     await c.init();
+    await c.startQuestionnaire();
+    expect(service.questionnaireVendorId, 'V1');
     expect(c.state.step, LeadStep.askName);
-    expect(texts(c), ['Hi! Welcome to Acme.', LeadCopy.askName]);
+    expect(texts(c), [
+      LeadCopy.menuGreeting('Acme'),
+      'Hi! Welcome to Acme.',
+      LeadCopy.askName,
+    ]);
 
     c.submitText('Ada Lovelace');
     expect(c.state.step, LeadStep.askEmail);
@@ -202,6 +303,7 @@ void main() {
   test('restores progress from local storage', () async {
     final first = make();
     await first.init();
+    await first.startQuestionnaire();
     first.submitText('Ada');
     first.dispose();
 
@@ -209,12 +311,13 @@ void main() {
     await second.init();
     expect(second.state.step, LeadStep.askEmail);
     expect(second.state.name, 'Ada');
-    expect(second.state.entries.length, 4);
+    expect(second.state.entries.length, 5);
   });
 
   test('a failed answer shows an error and retry continues', () async {
     final c = make();
     await c.init();
+    await c.startQuestionnaire();
     c.submitText('Ada');
     c.submitText('ada@example.com');
     await settle();
@@ -233,28 +336,34 @@ void main() {
     expect(c.state.currentQuestion!.id, 'budget');
   });
 
-  test('questionnaire load failure can be retried', () async {
-    service.fetchError = const LeadServiceException('HTTP 503');
-    final c = make();
+  test(
+    'questionnaire load failure keeps the menu and can be retried',
+    () async {
+      service.fetchError = const LeadServiceException('HTTP 503');
+      final c = make();
+      await c.init();
+      await c.startQuestionnaire();
+      expect(c.state.step, LeadStep.menu);
+      expect(c.state.error, contains('HTTP 503'));
+
+      service.fetchError = null;
+      await c.retry();
+      expect(c.state.step, LeadStep.askName);
+    },
+  );
+
+  test('missing vendor fails without calling the server', () async {
+    final c = make(urlName: '');
     await c.init();
     expect(c.state.step, LeadStep.loadFailed);
-    expect(c.state.error, contains('HTTP 503'));
-
-    service.fetchError = null;
-    await c.retry();
-    expect(c.state.step, LeadStep.askName);
-  });
-
-  test('missing vendor id fails without calling the server', () async {
-    final c = make(vendorId: '');
-    await c.init();
-    expect(c.state.step, LeadStep.loadFailed);
-    expect(c.state.error, contains('VENDOR_ID'));
+    expect(c.state.error, contains('no vendor'));
+    expect(service.requestedUrlName, isNull);
   });
 
   Future<LeadChatController> inChat() async {
     final c = make();
     await c.init();
+    await c.startQuestionnaire();
     c.submitText('Ada');
     c.submitText('ada@example.com');
     await settle();

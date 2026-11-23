@@ -89,7 +89,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     final state = ref.watch(leadChatControllerProvider);
     final controller = ref.read(leadChatControllerProvider.notifier);
-    final title = state.questionnaire?.vendorName ?? 'Chat';
+    final vendorName = state.vendor?.name ?? '';
+    final title = vendorName.isNotEmpty ? vendorName : 'Chat';
+    final canPickMenu = state.step == LeadStep.menu && !state.busy;
 
     return Scaffold(
       body: SafeArea(
@@ -113,6 +115,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               onChanged: () {
                 if (_inputError != null) setState(() => _inputError = null);
               },
+              menuItems: state.vendor?.menu ?? const [],
+              onMenuItem: canPickMenu ? controller.selectMenuItem : null,
               onStartOver: _confirmStartOver,
             ),
           ],
@@ -131,13 +135,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         onRetry: controller.retry,
       );
     }
-    final agentName = state.questionnaire?.vendorName;
+    final vendorName = state.vendor?.name ?? '';
+    final agentName = vendorName.isNotEmpty ? vendorName : null;
+    final menu = state.vendor?.menu ?? const <VendorMenuItem>[];
+    final showMenu = state.step == LeadStep.menu && menu.isNotEmpty;
+    final extra = (showMenu ? 1 : 0) + (state.busy ? 1 : 0);
     return ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      itemCount: state.entries.length + (state.busy ? 1 : 0),
+      itemCount: state.entries.length + extra,
       itemBuilder: (context, i) {
-        if (i == state.entries.length) return const _TypingIndicator();
+        if (i >= state.entries.length) {
+          if (showMenu && i == state.entries.length) {
+            return _VendorMenu(
+              items: menu,
+              selectedId: state.selectedMenuId,
+              onSelect: state.busy ? null : controller.selectMenuItem,
+            );
+          }
+          return const _TypingIndicator();
+        }
         final e = state.entries[i];
         if (e.author == EntryAuthor.system) return _SystemNote(entry: e);
         return _MessageBubble(entry: e, agentName: agentName);
@@ -148,6 +165,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   static String _hintFor(LeadChatState s) {
     if (s.busy) return 'One moment…';
     switch (s.step) {
+      case LeadStep.menu:
+        return 'Choose an option from the menu';
       case LeadStep.askName:
         return 'Your name';
       case LeadStep.askEmail:
@@ -555,6 +574,8 @@ class _Composer extends StatelessWidget {
     required this.onSend,
     required this.onChanged,
     required this.onStartOver,
+    this.menuItems = const [],
+    this.onMenuItem,
     this.errorText,
   });
 
@@ -567,6 +588,10 @@ class _Composer extends StatelessWidget {
   final VoidCallback onSend;
   final VoidCallback onChanged;
   final VoidCallback onStartOver;
+  final List<VendorMenuItem> menuItems;
+
+  /// Null while menu items can't be picked (they show disabled).
+  final ValueChanged<VendorMenuItem>? onMenuItem;
 
   @override
   Widget build(BuildContext context) {
@@ -594,6 +619,18 @@ class _Composer extends StatelessWidget {
                 MenuAnchor(
                   alignmentOffset: const Offset(0, 8),
                   menuChildren: [
+                    for (final item in menuItems)
+                      Semantics(
+                        identifier: 'chat_menu_item_${item.id}',
+                        child: MenuItemButton(
+                          leadingIcon: Icon(menuIconFor(item.icon)),
+                          onPressed: onMenuItem == null
+                              ? null
+                              : () => onMenuItem!(item),
+                          child: Text(item.name),
+                        ),
+                      ),
+                    if (menuItems.isNotEmpty) const Divider(height: 1),
                     Semantics(
                       identifier: 'chat_menu_start_over',
                       child: MenuItemButton(
@@ -665,6 +702,98 @@ class _Composer extends StatelessWidget {
               child: Text(
                 errorText!,
                 style: TextStyle(color: scheme.error, fontSize: 12),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Material icon for an `automationscenario.scenarioicon` name (these are
+/// Bootstrap icon names on the server).
+IconData menuIconFor(String? name) {
+  final key = (name ?? '').toLowerCase();
+  const icons = <String, IconData>{
+    'robot': Icons.smart_toy_outlined,
+    'broadcast': Icons.campaign_outlined,
+    'list': Icons.list_alt,
+    'checklist': Icons.checklist,
+    'fill': Icons.edit_note,
+    'card': Icons.credit_card,
+    'cash': Icons.payments_outlined,
+    'coin': Icons.monetization_on_outlined,
+    'earmark': Icons.description_outlined,
+    'file': Icons.description_outlined,
+    'richtext': Icons.article_outlined,
+    'search': Icons.search,
+    'calendar': Icons.calendar_today_outlined,
+    'event': Icons.event_outlined,
+    'chat': Icons.chat_bubble_outline,
+    'envelope': Icons.mail_outline,
+    'folder': Icons.folder_outlined,
+    'image': Icons.image_outlined,
+    'upload': Icons.upload_outlined,
+  };
+  for (final entry in icons.entries) {
+    if (key.contains(entry.key)) return entry.value;
+  }
+  return Icons.auto_awesome_outlined;
+}
+
+/// The vendor's menu, shown in the conversation under the greeting.
+class _VendorMenu extends StatelessWidget {
+  const _VendorMenu({
+    required this.items,
+    required this.selectedId,
+    required this.onSelect,
+  });
+
+  final List<VendorMenuItem> items;
+  final String? selectedId;
+  final ValueChanged<VendorMenuItem>? onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final item in items)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Semantics(
+                identifier: 'vendor_menu_item_${item.id}',
+                child: Material(
+                  color: item.id == selectedId
+                      ? scheme.secondaryContainer
+                      : scheme.surfaceContainerLow,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: scheme.outlineVariant),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    enabled: onSelect != null,
+                    leading: Icon(
+                      menuIconFor(item.icon),
+                      color: scheme.primary,
+                    ),
+                    title: Text(item.name, style: theme.textTheme.titleSmall),
+                    subtitle: item.description == null
+                        ? null
+                        : Text(
+                            item.description!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: onSelect == null ? null : () => onSelect!(item),
+                  ),
+                ),
               ),
             ),
         ],

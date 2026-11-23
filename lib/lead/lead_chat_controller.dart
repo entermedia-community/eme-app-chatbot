@@ -8,8 +8,12 @@ import 'lead_chat_state.dart';
 import 'lead_store.dart';
 import 'live_channel.dart';
 
-/// UI copy the app owns (vendor-specific text comes from the questionnaire).
+/// UI copy the app owns (vendor-specific text comes from the server).
 class LeadCopy {
+  static String menuGreeting(String vendorName) => vendorName.isEmpty
+      ? 'Hi! What can we help you with?'
+      : 'Hi! Welcome to $vendorName. What can we help you with?';
+  static const emptyMenu = 'Ask us anything and our team will get back to you.';
   static const askName = "Before we start, what's your name?";
   static String askEmail(String firstName) =>
       'Nice to meet you, $firstName! What email can we reach you at?';
@@ -26,7 +30,7 @@ final leadStoreProvider = Provider<LeadStore>((ref) => LeadStore());
 final leadChatControllerProvider =
     StateNotifierProvider<LeadChatController, LeadChatState>((ref) {
       final controller = LeadChatController(
-        vendorId: ChatbotConfig.vendorId,
+        vendorUrlName: ChatbotConfig.vendorUrlName,
         service: ref.watch(leadServiceProvider),
         live: ref.watch(liveChannelProvider),
         store: ref.watch(leadStoreProvider),
@@ -37,18 +41,19 @@ final leadChatControllerProvider =
 
 final _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
 
-/// Drives the lead questionnaire: name → email → vendor questions (one at a
-/// time) → consent → thank-you, then an open conversation on the lead's
-/// channel. Every change is saved to the visitor's device.
+/// Loads the vendor (by `urlname`) and opens on its menu. The lead
+/// questionnaire (name → email → vendor questions → consent → thank-you →
+/// open conversation) is available via [startQuestionnaire] but is not yet
+/// started by the UI. Every change is saved to the visitor's device.
 class LeadChatController extends StateNotifier<LeadChatState> {
   LeadChatController({
-    required this.vendorId,
+    required this.vendorUrlName,
     required this.service,
     required this.live,
     required this.store,
   }) : super(const LeadChatState());
 
-  final String vendorId;
+  final String vendorUrlName;
   final ILeadService service;
   final LiveChannel live;
   final LeadStore store;
@@ -57,38 +62,81 @@ class LeadChatController extends StateNotifier<LeadChatState> {
   StreamSubscription<ChatMessage>? _liveSub;
   int _idCounter = 0;
 
+  /// The vendor's id once loaded; the lead endpoints are keyed by it.
+  String get _vendorId => state.vendor!.id;
+
   Future<void> init() async {
-    if (vendorId.isEmpty) {
+    if (vendorUrlName.isEmpty) {
       _set(
         state.copyWith(
           step: LeadStep.loadFailed,
-          error: 'This chat is not configured (missing VENDOR_ID).',
+          error: 'This chat is not configured (no vendor in the link).',
         ),
         persist: false,
       );
       return;
     }
-    final saved = await store.load(vendorId);
+    final saved = await store.load(vendorUrlName);
     if (!mounted) return;
-    if (saved != null &&
-        saved.questionnaire != null &&
+    await _run(() => _loadVendor(saved));
+  }
+
+  /// Always fetches the vendor fresh, so menu changes show up on reload, then
+  /// restores the saved conversation (or starts a new one on the menu).
+  Future<void> _loadVendor(LeadChatState? saved) async {
+    final vendor = await service.fetchVendor(vendorUrlName);
+    final resumable =
+        saved != null &&
+        saved.vendor?.id == vendor.id &&
         saved.step != LeadStep.loading &&
-        saved.step != LeadStep.loadFailed) {
-      _set(saved, persist: false);
+        saved.step != LeadStep.loadFailed;
+    if (resumable) {
+      _set(saved.copyWith(vendor: vendor));
       if (saved.step == LeadStep.chat) await _openLiveChat();
       return;
     }
+    _set(
+      LeadChatState(
+        step: LeadStep.menu,
+        vendor: vendor,
+        entries: [
+          _entry(EntryAuthor.bot, LeadCopy.menuGreeting(vendor.name)),
+          if (vendor.menu.isEmpty) _entry(EntryAuthor.bot, LeadCopy.emptyMenu),
+        ],
+      ),
+    );
+  }
+
+  /// The visitor picked an item from the vendor's menu.
+  void selectMenuItem(VendorMenuItem item) {
+    if (state.step != LeadStep.menu || state.busy) return;
+    _set(
+      state.copyWith(
+        selectedMenuId: item.id,
+        entries: [...state.entries, _entry(EntryAuthor.visitor, item.name)],
+      ),
+    );
+  }
+
+  /// Starts the lead questionnaire (name, email, vendor questions, consent).
+  /// Needs the lead endpoints in `eme-app-sdk/docs/lead_api.md`.
+  Future<void> startQuestionnaire() async {
+    if (state.vendor == null || state.questionnaire != null) return;
     await _run(_loadQuestionnaire);
   }
 
   Future<void> _loadQuestionnaire() async {
-    final q = await service.fetchQuestionnaire(vendorId);
-    final entries = [
-      if (q.greeting != null) _entry(EntryAuthor.bot, q.greeting!),
-      _entry(EntryAuthor.bot, LeadCopy.askName),
-    ];
+    final q = await service.fetchQuestionnaire(_vendorId);
     _set(
-      LeadChatState(step: LeadStep.askName, questionnaire: q, entries: entries),
+      state.copyWith(
+        step: LeadStep.askName,
+        questionnaire: q,
+        entries: [
+          ...state.entries,
+          if (q.greeting != null) _entry(EntryAuthor.bot, q.greeting!),
+          _entry(EntryAuthor.bot, LeadCopy.askName),
+        ],
+      ),
     );
   }
 
@@ -195,12 +243,12 @@ class LeadChatController extends StateNotifier<LeadChatState> {
     await _run(action);
   }
 
-  /// Forget this device's chat and start the questionnaire again.
+  /// Forget this device's chat and start again from the menu.
   Future<void> startOver() async {
     await _liveSub?.cancel();
     _liveSub = null;
     live.disconnect();
-    await store.clear(vendorId);
+    await store.clear(vendorUrlName);
     _retry = null;
     _set(const LeadChatState(), persist: false);
     await init();
@@ -211,7 +259,7 @@ class LeadChatController extends StateNotifier<LeadChatState> {
   Future<void> _startLead() async {
     final q = state.questionnaire!;
     final session = await service.startLead(
-      vendorId: vendorId,
+      vendorId: _vendorId,
       questionnaireId: q.id,
       name: state.name!,
       email: state.email!,
@@ -341,7 +389,7 @@ class LeadChatController extends StateNotifier<LeadChatState> {
     } catch (e) {
       if (!mounted) return;
       _retry = action;
-      final failedLoad = state.questionnaire == null;
+      final failedLoad = state.vendor == null;
       _set(
         state.copyWith(
           busy: false,
@@ -374,8 +422,8 @@ class LeadChatController extends StateNotifier<LeadChatState> {
   void _set(LeadChatState next, {bool persist = true}) {
     if (!mounted) return;
     state = next;
-    if (persist && next.questionnaire != null) {
-      unawaited(store.save(vendorId, next));
+    if (persist && next.vendor != null) {
+      unawaited(store.save(vendorUrlName, next));
     }
   }
 
