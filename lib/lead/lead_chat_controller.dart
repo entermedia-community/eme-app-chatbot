@@ -107,15 +107,17 @@ class LeadChatController extends StateNotifier<LeadChatState> {
     );
   }
 
-  /// The visitor picked an item from the vendor's menu.
-  void selectMenuItem(VendorMenuItem item) {
-    if (state.step != LeadStep.menu || state.busy) return;
+  /// The visitor picked an item from the vendor's menu. Returns false when
+  /// the menu can't be used right now.
+  bool selectMenuItem(VendorMenuItem item) {
+    if (state.step != LeadStep.menu || state.busy) return false;
     _set(
       state.copyWith(
         selectedMenuId: item.id,
         entries: [...state.entries, _entry(EntryAuthor.visitor, item.name)],
       ),
     );
+    return true;
   }
 
   /// Starts the lead questionnaire (name, email, vendor questions, consent).

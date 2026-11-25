@@ -3,8 +3,12 @@ import 'package:flutter/material.dart' hide FormField;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../chat/chat_form_card.dart';
+import '../chat/vendor_chat_controller.dart';
 import '../lead/lead_chat_controller.dart';
 import '../lead/lead_chat_state.dart';
+import '../signup/signup_controller.dart';
+import '../signup/signup_dialog.dart';
 
 /// Open (anonymous) lead-capture chat: header, transcript, quick replies for
 /// the current question, and a composer with a drop-up menu.
@@ -20,6 +24,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   String? _inputError;
+  bool _signupOpen = false;
+
+  /// Any tap on the chat while signed out lands here.
+  Future<void> _promptSignup() async {
+    if (_signupOpen) return;
+    _signupOpen = true;
+    final signedIn = await showSignupDialog(context);
+    _signupOpen = false;
+    if (signedIn && mounted) _inputFocus.requestFocus();
+  }
 
   @override
   void dispose() {
@@ -46,6 +60,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() => _inputError = error);
     if (error == null) _input.clear();
     _inputFocus.requestFocus();
+  }
+
+  /// A menu pick shows in the transcript and starts the item's scenario on
+  /// the vendor's server chat.
+  void _pickMenuItem(VendorMenuItem item) {
+    final picked = ref
+        .read(leadChatControllerProvider.notifier)
+        .selectMenuItem(item);
+    if (picked) {
+      ref.read(vendorChatControllerProvider.notifier).startScenario(item);
+    }
   }
 
   Future<void> _confirmStartOver() async {
@@ -87,45 +112,72 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       leadChatControllerProvider.select((s) => (s.entries.length, s.busy)),
       (_, _) => _scrollToEnd(),
     );
+    ref.listen(
+      vendorChatControllerProvider.select(
+        (s) => (s.messages.length, s.echoes.length, s.awaitingReply),
+      ),
+      (_, _) => _scrollToEnd(),
+    );
     final state = ref.watch(leadChatControllerProvider);
+    final chat = ref.watch(vendorChatControllerProvider);
+    final chatController = ref.read(vendorChatControllerProvider.notifier);
     final controller = ref.read(leadChatControllerProvider.notifier);
     final vendorName = state.vendor?.name ?? '';
     final title = vendorName.isNotEmpty ? vendorName : 'Chat';
     final canPickMenu = state.step == LeadStep.menu && !state.busy;
 
+    final signup = ref.watch(signupControllerProvider);
+
     return Scaffold(
       body: SafeArea(
-        child: Column(
-          children: [
-            _ChatHeader(title: title),
-            const Divider(height: 1),
-            Expanded(child: _body(state, controller)),
-            if (state.error != null && state.step != LeadStep.loadFailed)
-              _ErrorBanner(message: state.error!, onRetry: controller.retry),
-            if (!state.busy)
-              _QuickReplies(state: state, controller: controller),
-            _Composer(
-              controller: _input,
-              focusNode: _inputFocus,
-              enabled: state.acceptsText,
-              hintText: _hintFor(state),
-              errorText: _inputError,
-              keyboardType: _keyboardFor(state),
-              onSend: _send,
-              onChanged: () {
-                if (_inputError != null) setState(() => _inputError = null);
-              },
-              menuItems: state.vendor?.menu ?? const [],
-              onMenuItem: canPickMenu ? controller.selectMenuItem : null,
-              onStartOver: _confirmStartOver,
-            ),
-          ],
+        child: _SignupGate(
+          // Until the visitor has signed up, every tap opens the sign-up
+          // popup instead of reaching the chat. While the saved session is
+          // still being checked, taps are held back without a popup.
+          locked: !signup.isSignedIn,
+          onTap: signup.status == SignupStatus.signedOut ? _promptSignup : null,
+          child: Column(
+            children: [
+              _ChatHeader(title: title),
+              const Divider(height: 1),
+              Expanded(child: _body(state, controller, chat, chatController)),
+              if (state.error != null && state.step != LeadStep.loadFailed)
+                _ErrorBanner(message: state.error!, onRetry: controller.retry),
+              if (chat.error != null && state.step != LeadStep.loadFailed)
+                _ErrorBanner(
+                  message: chat.error!,
+                  onRetry: chatController.retry,
+                ),
+              if (!state.busy)
+                _QuickReplies(state: state, controller: controller),
+              _Composer(
+                controller: _input,
+                focusNode: _inputFocus,
+                enabled: state.acceptsText,
+                hintText: _hintFor(state),
+                errorText: _inputError,
+                keyboardType: _keyboardFor(state),
+                onSend: _send,
+                onChanged: () {
+                  if (_inputError != null) setState(() => _inputError = null);
+                },
+                menuItems: state.vendor?.menu ?? const [],
+                onMenuItem: canPickMenu ? _pickMenuItem : null,
+                onStartOver: _confirmStartOver,
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _body(LeadChatState state, LeadChatController controller) {
+  Widget _body(
+    LeadChatState state,
+    LeadChatController controller,
+    VendorChatState chat,
+    VendorChatController chatController,
+  ) {
     if (state.step == LeadStep.loading && state.entries.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -139,26 +191,72 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final agentName = vendorName.isNotEmpty ? vendorName : null;
     final menu = state.vendor?.menu ?? const <VendorMenuItem>[];
     final showMenu = state.step == LeadStep.menu && menu.isNotEmpty;
-    final extra = (showMenu ? 1 : 0) + (state.busy ? 1 : 0);
+
+    // The chatbot's own lines and the server's messages, in the order they
+    // showed up.
+    final items = <(DateTime, Widget)>[
+      for (final e in [...state.entries, ...chat.echoes])
+        (
+          e.createdAt,
+          e.author == EntryAuthor.system
+              ? _SystemNote(entry: e)
+              : _MessageBubble(entry: e, agentName: agentName),
+        ),
+      for (final s in chat.messages)
+        (s.at, _serverMessage(s.message, chat, chatController, agentName)),
+    ];
+    // List.sort isn't stable; keep same-time lines in their list order.
+    final ordered = [for (var i = 0; i < items.length; i++) (i, items[i])]
+      ..sort((a, b) {
+        final byTime = a.$2.$1.compareTo(b.$2.$1);
+        return byTime != 0 ? byTime : a.$1.compareTo(b.$1);
+      });
+
+    final rows = <Widget>[
+      for (final o in ordered) o.$2.$2,
+      if (showMenu)
+        _VendorMenu(
+          items: menu,
+          selectedId: state.selectedMenuId,
+          onSelect: state.busy ? null : _pickMenuItem,
+        ),
+      if (state.busy || chat.connecting || chat.awaitingReply)
+        const _TypingIndicator(),
+    ];
     return ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      itemCount: state.entries.length + extra,
-      itemBuilder: (context, i) {
-        if (i >= state.entries.length) {
-          if (showMenu && i == state.entries.length) {
-            return _VendorMenu(
-              items: menu,
-              selectedId: state.selectedMenuId,
-              onSelect: state.busy ? null : controller.selectMenuItem,
-            );
-          }
-          return const _TypingIndicator();
-        }
-        final e = state.entries[i];
-        if (e.author == EntryAuthor.system) return _SystemNote(entry: e);
-        return _MessageBubble(entry: e, agentName: agentName);
-      },
+      itemCount: rows.length,
+      itemBuilder: (context, i) => rows[i],
+    );
+  }
+
+  Widget _serverMessage(
+    ChatMessage m,
+    VendorChatState chat,
+    VendorChatController chatController,
+    String? agentName,
+  ) {
+    if (m.messageRenderType == MessageRenderType.form &&
+        m.formFields.isNotEmpty) {
+      return ChatFormCard(
+        key: ValueKey('chat_form_${m.messageId}'),
+        message: m,
+        enabled: chat.isFormOpen(m),
+        onSubmit: (values, echo) =>
+            chatController.submitForm(m, values, echo: echo),
+      );
+    }
+    final text = m.text.trim();
+    if (text.isEmpty) return const SizedBox.shrink();
+    return _MessageBubble(
+      entry: TranscriptEntry(
+        id: 'srv_${m.messageId}',
+        author: EntryAuthor.agent,
+        text: text,
+        createdAt: m.createdAt,
+      ),
+      agentName: agentName,
     );
   }
 
@@ -190,6 +288,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return const TextInputType.numberWithOptions(decimal: true);
     }
     return TextInputType.multiline;
+  }
+}
+
+/// Covers [child] with a transparent layer that swallows pointer input and
+/// calls [onTap] while [locked].
+class _SignupGate extends StatelessWidget {
+  const _SignupGate({
+    required this.locked,
+    required this.onTap,
+    required this.child,
+  });
+
+  final bool locked;
+  final VoidCallback? onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // Keep the chat out of focus traversal while it can't be used.
+        ExcludeFocus(excluding: locked, child: child),
+        if (locked)
+          Positioned.fill(
+            child: Semantics(
+              identifier: 'signup_gate',
+              button: true,
+              label: 'Sign up to chat',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onTap,
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }
 
