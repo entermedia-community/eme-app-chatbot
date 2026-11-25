@@ -190,7 +190,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final vendorName = state.vendor?.name ?? '';
     final agentName = vendorName.isNotEmpty ? vendorName : null;
     final menu = state.vendor?.menu ?? const <VendorMenuItem>[];
-    final showMenu = state.step == LeadStep.menu && menu.isNotEmpty;
+    // Once an item is picked it lives in the + menu only.
+    final showMenu =
+        state.step == LeadStep.menu &&
+        menu.isNotEmpty &&
+        state.selectedMenuId == null;
 
     // The chatbot's own lines and the server's messages, in the order they
     // showed up.
@@ -746,7 +750,7 @@ class _Composer extends StatelessWidget {
                   : null,
             ),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // Drop-up menu: the composer sits at the bottom of the screen,
                 // so MenuAnchor flips the menu above the button.

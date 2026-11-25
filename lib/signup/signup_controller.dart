@@ -19,6 +19,14 @@ class SignupState {
   bool get isSignedIn => status == SignupStatus.signedIn;
 }
 
+enum CodeOutcome { sent, needsRegistration, failed }
+
+class CodeResult {
+  final CodeOutcome outcome;
+  final String? error;
+  const CodeResult(this.outcome, [this.error]);
+}
+
 final signupControllerProvider =
     StateNotifierProvider<SignupController, SignupState>((ref) {
       final controller = SignupController(ref.watch(authServiceProvider));
@@ -26,10 +34,10 @@ final signupControllerProvider =
       return controller;
     });
 
-/// Signs the visitor up (or in, if the email already has an account) with an
-/// emailed one-time code: `sendusercode.json` with first/last name, then
-/// `token.json` `grant_type=otp`. The server creates the user when the code
-/// is redeemed.
+/// Signs the visitor in with an emailed one-time code (`sendusercode.json`,
+/// then `token.json` `grant_type=otp`), like the backoffice app: email first;
+/// an unknown email is asked for a name to register, and the server creates
+/// the user when the code is redeemed.
 ///
 /// Uses [IAuthService] directly rather than the SDK's `AuthNotifier`, which
 /// also signs in to Firebase for push notifications, which the chatbot does
@@ -52,24 +60,42 @@ class SignupController extends StateNotifier<SignupState> {
         : const SignupState(status: SignupStatus.signedOut);
   }
 
-  /// Emails a sign-up code. Returns an error message, or null when sent.
-  Future<String?> sendCode({
-    required String firstName,
-    required String lastName,
+  /// Asks the server to email a code. Without names it is a sign-in: an
+  /// unknown email answers [CodeOutcome.needsRegistration] when the server
+  /// allows new accounts, [CodeOutcome.registrationClosed] when it doesn't.
+  /// With names it registers the visitor; the account is created when the
+  /// code is redeemed.
+  Future<CodeResult> sendCode({
     required String email,
+    String? firstName,
+    String? lastName,
   }) async {
     final result = await _auth.sendUserCode(
       email: email,
       firstName: firstName,
       lastName: lastName,
     );
-    if (result.isSuccess) return null;
-    // With a name given the server never answers "nouser"; the SDK reports a
-    // failed request that way, so treat anything but ok as not sent.
+    if (result.isSuccess) return const CodeResult(CodeOutcome.sent);
+    if (result.isNoUser) {
+      final registering = (firstName ?? '').trim().isNotEmpty;
+      if (!registering && result.allowGuestRegistration) {
+        return const CodeResult(CodeOutcome.needsRegistration);
+      }
+      return CodeResult(
+        CodeOutcome.failed,
+        registering
+            ? "We couldn't create your account. Please try again."
+            : 'No account found for this email, and new sign-ups are not '
+                  'available.',
+      );
+    }
     final message = result.errorMessage;
-    return message != null && message.isNotEmpty
-        ? message
-        : "We couldn't send the code. Check your connection and try again.";
+    return CodeResult(
+      CodeOutcome.failed,
+      message != null && message.isNotEmpty
+          ? message
+          : "We couldn't send the code. Check your connection and try again.",
+    );
   }
 
   /// Redeems the emailed code. Returns an error message, or null when the

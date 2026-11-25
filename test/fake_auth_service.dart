@@ -8,6 +8,10 @@ class FakeAuthService implements IAuthService {
   SendUserCodeResult sendResult = const SendUserCodeResult(
     status: SendUserCodeStatus.ok,
   );
+
+  /// False: an email sent without a name answers "nouser".
+  bool existingUser = true;
+  bool allowRegistration = true;
   String validCode = '123456';
   final sent = <Map<String, String?>>[];
 
@@ -21,6 +25,12 @@ class FakeAuthService implements IAuthService {
     String? lastName,
   }) async {
     sent.add({'email': email, 'firstName': firstName, 'lastName': lastName});
+    if (!existingUser && firstName == null) {
+      return SendUserCodeResult(
+        status: SendUserCodeStatus.nouser,
+        allowGuestRegistration: allowRegistration,
+      );
+    }
     return sendResult;
   }
 

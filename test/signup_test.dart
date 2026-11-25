@@ -57,11 +57,16 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> fillDetails(WidgetTester tester) async {
-    await tester.enterText(input('signup_first_name_input'), 'Ada');
-    await tester.enterText(input('signup_last_name_input'), 'Lovelace');
+  Future<void> submitEmail(WidgetTester tester) async {
     await tester.enterText(input('signup_email_input'), 'ada@example.com');
     await tester.tap(byId('signup_send_button'));
+    await settle(tester);
+  }
+
+  Future<void> submitName(WidgetTester tester) async {
+    await tester.enterText(input('signup_first_name_input'), 'Ada');
+    await tester.enterText(input('signup_last_name_input'), 'Lovelace');
+    await tester.tap(byId('signup_register_button'));
     await settle(tester);
   }
 
@@ -89,18 +94,20 @@ void main() {
     expect(find.byType(SignupDialog), findsOneWidget);
   });
 
-  testWidgets('name + email, then the code, signs the visitor up', (
+  testWidgets('an existing account signs in with just email + code', (
     tester,
   ) async {
     await pumpChat(tester);
     await tester.tap(find.text('Book a demo'), warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    await fillDetails(tester);
+    expect(find.text('Sign in to chat'), findsOneWidget);
+    expect(input('signup_first_name_input'), findsNothing);
+    await submitEmail(tester);
     expect(auth.sent.single, {
       'email': 'ada@example.com',
-      'firstName': 'Ada',
-      'lastName': 'Lovelace',
+      'firstName': null,
+      'lastName': null,
     });
     expect(find.text('Check your email'), findsOneWidget);
 
@@ -113,7 +120,7 @@ void main() {
     await settle(tester);
     expect(find.byType(SignupDialog), findsNothing);
     expect(signup.state.isSignedIn, isTrue);
-    // The vendor chat opens right after sign-up.
+    // The vendor chat opens right after sign-in.
     expect(chatApi.connected, ['V1']);
 
     // The chat now takes taps.
@@ -123,19 +130,68 @@ void main() {
     expect(lead.state.selectedMenuId, 'book_demo');
   });
 
-  testWidgets('a failed send stays on the details step with an error', (
+  testWidgets('a new email asks for a name when sign-ups are open', (
+    tester,
+  ) async {
+    await pumpChat(tester);
+    auth.existingUser = false;
+    await tester.tap(find.text('Book a demo'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    await submitEmail(tester);
+    expect(find.text('Create your profile'), findsOneWidget);
+    // The email is kept, read only.
+    expect(
+      tester.widget<TextField>(input('signup_email_input')).enabled,
+      isFalse,
+    );
+    expect(find.text('ada@example.com'), findsOneWidget);
+
+    await submitName(tester);
+    expect(auth.sent.last, {
+      'email': 'ada@example.com',
+      'firstName': 'Ada',
+      'lastName': 'Lovelace',
+    });
+    expect(find.text('Check your email'), findsOneWidget);
+
+    await tester.enterText(input('signup_code_input'), '123456');
+    await settle(tester);
+    expect(find.byType(SignupDialog), findsNothing);
+    expect(signup.state.isSignedIn, isTrue);
+    expect(signup.state.user?.email, 'ada@example.com');
+  });
+
+  testWidgets('a new email is refused when sign-ups are closed', (
+    tester,
+  ) async {
+    await pumpChat(tester);
+    auth
+      ..existingUser = false
+      ..allowRegistration = false;
+    await tester.tap(find.text('Book a demo'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    await submitEmail(tester);
+    expect(find.text('Sign in to chat'), findsOneWidget);
+    expect(find.textContaining('No account found'), findsOneWidget);
+    expect(input('signup_first_name_input'), findsNothing);
+  });
+
+  testWidgets('a failed send stays on the email step with an error', (
     tester,
   ) async {
     await pumpChat(tester);
     auth.sendResult = const SendUserCodeResult(
-      status: SendUserCodeStatus.nouser,
+      status: SendUserCodeStatus.error,
+      errorMessage: 'Server unavailable',
     );
     await tester.tap(find.text('Book a demo'), warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    await fillDetails(tester);
-    expect(find.text('Sign up to chat'), findsOneWidget);
-    expect(find.textContaining("couldn't send the code"), findsOneWidget);
+    await submitEmail(tester);
+    expect(find.text('Sign in to chat'), findsOneWidget);
+    expect(find.text('Server unavailable'), findsOneWidget);
   });
 
   testWidgets('a saved session skips the popup', (tester) async {

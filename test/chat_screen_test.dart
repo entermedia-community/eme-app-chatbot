@@ -66,8 +66,10 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
     expect(controller.state.selectedMenuId, 'book_demo');
-    // The pick shows as the visitor's message; the menu stays available.
-    expect(find.text('Book a demo'), findsNWidgets(2));
+    // The pick shows as the visitor's message and the in-chat menu goes away
+    // (the items stay in the + menu).
+    expect(find.text('Book a demo'), findsOneWidget);
+    expect(find.text('Answer Questions'), findsNothing);
   });
 
   testWidgets('signing in opens the vendor chat; a pick runs its scenario', (
