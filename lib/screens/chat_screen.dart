@@ -114,7 +114,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     ref.listen(
       vendorChatControllerProvider.select(
-        (s) => (s.messages.length, s.echoes.length, s.awaitingReply),
+        (s) => (s.messages.length, s.awaitingReply),
       ),
       (_, _) => _scrollToEnd(),
     );
@@ -190,16 +190,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final vendorName = state.vendor?.name ?? '';
     final agentName = vendorName.isNotEmpty ? vendorName : null;
     final menu = state.vendor?.menu ?? const <VendorMenuItem>[];
-    // Once an item is picked it lives in the + menu only.
+    // Once the chat has started (an item was picked, or the server has
+    // replied) the items live in the + menu only.
+    final chatStarted =
+        state.selectedMenuId != null ||
+        chat.messages.isNotEmpty ||
+        chat.awaitingReply;
     final showMenu =
-        state.step == LeadStep.menu &&
-        menu.isNotEmpty &&
-        state.selectedMenuId == null;
+        state.step == LeadStep.menu && menu.isNotEmpty && !chatStarted;
 
     // The chatbot's own lines and the server's messages, in the order they
     // showed up.
     final items = <(DateTime, Widget)>[
-      for (final e in [...state.entries, ...chat.echoes])
+      for (final e in state.entries)
         (
           e.createdAt,
           e.author == EntryAuthor.system
@@ -243,12 +246,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   ) {
     if (m.messageRenderType == MessageRenderType.form &&
         m.formFields.isNotEmpty) {
+      // A submitted form is shown as the visitor's "label: value" lines.
+      if (m.formSubmitted) {
+        return _MessageBubble(
+          entry: TranscriptEntry(
+            id: 'form_${m.messageId}',
+            author: EntryAuthor.visitor,
+            text: submittedFormText(m),
+            createdAt: m.createdAt,
+          ),
+          agentName: agentName,
+        );
+      }
+      // Sent, waiting for the server to send it back as submitted.
+      if (chat.submittedFormIds.contains(m.messageId)) {
+        return const SizedBox.shrink();
+      }
       return ChatFormCard(
         key: ValueKey('chat_form_${m.messageId}'),
         message: m,
         enabled: chat.isFormOpen(m),
-        onSubmit: (values, echo) =>
-            chatController.submitForm(m, values, echo: echo),
+        onSubmit: (values) => chatController.submitForm(m, values),
       );
     }
     final text = m.text.trim();

@@ -84,7 +84,8 @@ void main() {
     expect(find.byType(SignupDialog), findsOneWidget);
     expect(lead.state.selectedMenuId, isNull);
 
-    await tester.tap(byId('signup_cancel_button'));
+    // No cancel button: tapping outside the dialog dismisses it.
+    await tester.tapAt(const Offset(5, 5));
     await tester.pumpAndSettle();
     expect(find.byType(SignupDialog), findsNothing);
 

@@ -2,6 +2,7 @@ import 'package:eme_app_sdk/eme_app_sdk.dart';
 import 'package:eme_chatbot/chat/channel_socket.dart';
 import 'package:eme_chatbot/lead/lead_chat_controller.dart';
 import 'package:eme_chatbot/lead/lead_store.dart';
+import 'package:eme_chatbot/chat/chat_form_card.dart';
 import 'package:eme_chatbot/screens/chat_screen.dart';
 import 'package:eme_chatbot/signup/signup_controller.dart';
 import 'package:flutter/material.dart';
@@ -148,9 +149,28 @@ void main() {
     expect(sent['context_meetingtimezone'], startsWith('UTC'));
     expect(sent['context_meetingmessage'], 'About pricing');
 
-    // The card locks and the visitor's side shows what they asked for.
-    expect(find.widgetWithText(FilledButton, 'Sent'), findsOneWidget);
-    expect(find.textContaining('10:00\nAbout pricing'), findsOneWidget);
+    // The form id goes along so the server can keep the values on it.
+    expect(sent['formmessageid'], 'form1');
+
+    // The server sends the form back submitted: it is replaced by the
+    // visitor's "label: value" lines.
+    socket.push(
+      meetingForm(
+        submitted: {
+          'context_meetingtimezone': sent['context_meetingtimezone'] as String,
+          'context_meetingtime': sent['context_meetingtime'] as String,
+          'context_meetingmessage': 'About pricing',
+        },
+      ),
+    );
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatFormCard), findsNothing);
+    expect(
+      find.textContaining('10:00\nMessage (optional): About pricing'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Date and time: '), findsOneWidget);
   });
 
   testWidgets('drop-up menu lists the vendor items', (tester) async {

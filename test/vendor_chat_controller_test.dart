@@ -34,6 +34,33 @@ void main() {
     expect(c.state.connecting, isFalse);
   });
 
+  test('history listed newest first is shown oldest first', () async {
+    ChatMessage at(String id, String text, int minute) => ChatMessage.fromJson({
+      'messageid': id,
+      'channel': 'ch_V1',
+      'user': 'agent',
+      'message': text,
+      'date': '2026-01-01T10:0$minute:00Z',
+    });
+    api.history = [
+      at('h3', 'third', 3),
+      at('h2', 'second', 2),
+      at('h1', 'first', 1),
+    ];
+    await c.open(vendorId: 'V1', userId: 'u1');
+
+    expect(c.state.messages.map((e) => e.message.text), [
+      'first',
+      'second',
+      'third',
+    ]);
+    // Placed by load time, in order, not by the server's (2026) dates.
+    final times = c.state.messages.map((e) => e.at).toList();
+    expect(times[0].isBefore(times[1]), isTrue);
+    expect(times[1].isBefore(times[2]), isTrue);
+    expect(times[0].year, DateTime.now().year);
+  });
+
   test('a connect failure is shown and can be retried', () async {
     api.connectError = Exception('offline');
     await c.open(vendorId: 'V1', userId: 'u1');
@@ -96,15 +123,16 @@ void main() {
     await c.submitForm(form, {
       'functionname': 'eme_chatbot_request_meeting_submit',
       'context_meetingtime': '2026-12-03T14:00',
-    }, echo: 'Thu 3 Dec 2026, 14:00');
+    });
 
+    // The form's message id goes along so the server can keep the values on it.
     expect(api.submitted.single, {
       'channel': 'ch_V1',
       'functionname': 'eme_chatbot_request_meeting_submit',
       'context_meetingtime': '2026-12-03T14:00',
+      'formmessageid': form.messageId,
     });
     expect(c.state.isFormOpen(form), isFalse);
-    expect(c.state.echoes.single.text, 'Thu 3 Dec 2026, 14:00');
     expect(c.state.awaitingReply, isTrue);
 
     socket.push(agentText('r1', 'Thanks! Your meeting request has been sent.'));
@@ -120,9 +148,8 @@ void main() {
     final form = c.state.messages.single.message;
 
     api.submitError = Exception('500');
-    await c.submitForm(form, {'a': 'b'}, echo: 'x');
+    await c.submitForm(form, {'a': 'b'});
     expect(c.state.isFormOpen(form), isTrue);
-    expect(c.state.echoes, isEmpty);
     expect(c.state.error, isNotNull);
   });
 

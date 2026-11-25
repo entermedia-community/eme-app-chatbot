@@ -28,6 +28,40 @@ const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 String displayFormDate(DateTime d) =>
     '${_dayNames[d.weekday - 1]} ${d.day} ${_monthNames[d.month - 1]} ${d.year}';
 
+/// The "label: value" lines of a submitted form, as the server kept them in
+/// the fields' `value`. Hidden and empty fields are left out.
+String submittedFormText(ChatMessage message) {
+  final lines = <String>[];
+  for (final f in message.formFields) {
+    if (f.type == FormFieldType.hidden) continue;
+    final raw = f.value?.toString().trim() ?? '';
+    if (raw.isEmpty) continue;
+    lines.add('${f.label}: ${_submittedValue(f, raw)}');
+  }
+  return lines.join('\n');
+}
+
+String _submittedValue(FormField f, String raw) {
+  switch (f.type) {
+    case FormFieldType.datetime:
+      final parsed = DateTime.tryParse(raw);
+      return parsed == null
+          ? raw
+          : '${displayFormDate(parsed)}, ${formatFormTime(TimeOfDay.fromDateTime(parsed))}';
+    case FormFieldType.date:
+      final parsed = DateTime.tryParse(raw);
+      return parsed == null ? raw : displayFormDate(parsed);
+    case FormFieldType.select:
+    case FormFieldType.radio:
+      for (final o in f.options) {
+        if (o.value.toString() == raw) return o.label;
+      }
+      return raw;
+    default:
+      return raw;
+  }
+}
+
 /// A form the server sent in the chat (e.g. Request a Meeting). Hidden
 /// fields are sent as they came. Locks once [enabled] turns false.
 class ChatFormCard extends StatefulWidget {
@@ -43,9 +77,9 @@ class ChatFormCard extends StatefulWidget {
   /// False once submitted, or after a newer server message replaced it.
   final bool enabled;
 
-  /// [values] are field name → value; [echo] is a one-line summary for the
-  /// visitor's side of the chat.
-  final void Function(Map<String, dynamic> values, String echo) onSubmit;
+  /// [values] are field name → value. Once the server has them it sends the
+  /// form back as submitted, shown as text ([submittedFormText]).
+  final void Function(Map<String, dynamic> values) onSubmit;
 
   @override
   State<ChatFormCard> createState() => _ChatFormCardState();
@@ -194,7 +228,6 @@ class _ChatFormCardState extends State<ChatFormCard> {
 
   void _submit() {
     final values = <String, dynamic>{};
-    final echo = <String>[];
     for (final f in _fields) {
       final v = _valueOf(f);
       if (v == null) {
@@ -205,11 +238,9 @@ class _ChatFormCardState extends State<ChatFormCard> {
         continue;
       }
       values[f.name] = v;
-      final shown = _displayOf(f);
-      if (shown != null) echo.add(shown);
     }
     setState(() => _error = null);
-    widget.onSubmit(values, echo.join('\n'));
+    widget.onSubmit(values);
   }
 
   @override

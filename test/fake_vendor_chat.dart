@@ -81,39 +81,52 @@ class FakeChannelSocket implements ChannelSocket {
 }
 
 /// The form EmeChatbotRequestMeetingSkill sends, as it arrives on the socket.
-ChatMessage meetingForm({String id = 'form1', String channel = 'ch_V1'}) =>
-    ChatMessage.fromJson({
-      'messageid': id,
-      'channel': channel,
-      'user': 'agent',
-      'message': jsonEncode({
-        'messageplain': 'Request a Meeting',
-        'ops': [
-          {'insert': 'Request a Meeting\n'},
-        ],
-        'form': [
-          {'type': 'hidden', 'name': 'channel', 'value': channel},
-          {
-            'type': 'hidden',
-            'name': 'functionname',
-            'value': 'eme_chatbot_request_meeting_submit',
-          },
-          {'type': 'hidden', 'name': 'context_meetingtimezone', 'value': ''},
-          {
-            'type': 'datetime-local',
-            'name': 'context_meetingtime',
-            'label': 'Date and time',
-            'required': true,
-          },
-          {
-            'type': 'textarea',
-            'name': 'context_meetingmessage',
-            'label': 'Message (optional)',
-          },
-        ],
-        'submitLabel': 'Request meeting',
-      }),
-    });
+///
+/// With [submitted] set it is the form as the server sends it back after a
+/// submit: each field's `value` filled in and `"submitted": true`.
+ChatMessage meetingForm({
+  String id = 'form1',
+  String channel = 'ch_V1',
+  Map<String, String>? submitted,
+}) => ChatMessage.fromJson({
+  'messageid': id,
+  'channel': channel,
+  'user': 'agent',
+  'message': jsonEncode({
+    'messageplain': 'Request a Meeting',
+    'ops': [
+      {'insert': 'Request a Meeting\n'},
+    ],
+    'form': [
+      {'type': 'hidden', 'name': 'channel', 'value': channel},
+      {
+        'type': 'hidden',
+        'name': 'functionname',
+        'value': 'eme_chatbot_request_meeting_submit',
+      },
+      {
+        'type': 'hidden',
+        'name': 'context_meetingtimezone',
+        'value': submitted?['context_meetingtimezone'] ?? '',
+      },
+      {
+        'type': 'datetime-local',
+        'name': 'context_meetingtime',
+        'label': 'Date and time',
+        'required': true,
+        if (submitted != null) 'value': submitted['context_meetingtime'],
+      },
+      {
+        'type': 'textarea',
+        'name': 'context_meetingmessage',
+        'label': 'Message (optional)',
+        if (submitted != null) 'value': submitted['context_meetingmessage'],
+      },
+    ],
+    'submitLabel': 'Request meeting',
+    if (submitted != null) 'submitted': true,
+  }),
+});
 
 ChatMessage agentText(String id, String text, {String channel = 'ch_V1'}) =>
     ChatMessage.fromJson({

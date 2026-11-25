@@ -4,7 +4,6 @@ import 'package:eme_app_sdk/eme_app_sdk.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../lead/lead_chat_controller.dart';
-import '../lead/lead_chat_state.dart';
 import '../signup/signup_controller.dart';
 import 'channel_socket.dart';
 
@@ -24,10 +23,6 @@ class VendorChatState {
   /// Server messages, oldest first, one per message id.
   final List<ServerEntry> messages;
 
-  /// The visitor's own lines for things sent to the server (form
-  /// submissions); menu picks are echoed by the lead transcript.
-  final List<TranscriptEntry> echoes;
-
   /// Forms the visitor submitted in this session.
   final Set<String> submittedFormIds;
 
@@ -43,7 +38,6 @@ class VendorChatState {
   const VendorChatState({
     this.channel,
     this.messages = const [],
-    this.echoes = const [],
     this.submittedFormIds = const {},
     this.connecting = false,
     this.awaitingReply = false,
@@ -61,7 +55,6 @@ class VendorChatState {
   VendorChatState copyWith({
     String? channel,
     List<ServerEntry>? messages,
-    List<TranscriptEntry>? echoes,
     Set<String>? submittedFormIds,
     bool? connecting,
     bool? awaitingReply,
@@ -70,7 +63,6 @@ class VendorChatState {
   }) => VendorChatState(
     channel: channel ?? this.channel,
     messages: messages ?? this.messages,
-    echoes: echoes ?? this.echoes,
     submittedFormIds: submittedFormIds ?? this.submittedFormIds,
     connecting: connecting ?? this.connecting,
     awaitingReply: awaitingReply ?? this.awaitingReply,
@@ -125,7 +117,6 @@ class VendorChatController extends StateNotifier<VendorChatState> {
   StreamSubscription<ChatMessage>? _sub;
   Future<void> Function()? _retry;
   Timer? _replyTimer;
-  int _idCounter = 0;
 
   /// Opens the channel for [vendorId] once; later calls do nothing.
   Future<void> open({required String vendorId, required String userId}) async {
@@ -144,8 +135,15 @@ class VendorChatController extends StateNotifier<VendorChatState> {
       _sub ??= socket.messages.listen(_onMessage);
       await socket.connect(channel: channel, userId: _userId!);
       final history = await api.fetchServerChatMessages(channel);
-      for (final m in history) {
-        _add(m, at: m.createdAt);
+      // The server may list newest first; show oldest first.
+      final ordered = [...history]
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      // Place history by when it loaded, not by the server's own dates: they
+      // can sit hours off this device's clock and would land above the
+      // chatbot's greeting. The order among them is kept.
+      final loadedAt = DateTime.now();
+      for (var i = 0; i < ordered.length; i++) {
+        _add(ordered[i], at: loadedAt.add(Duration(microseconds: i)));
       }
     } finally {
       if (mounted) state = state.copyWith(connecting: false);
@@ -164,30 +162,23 @@ class VendorChatController extends StateNotifier<VendorChatState> {
     _awaitReply();
   });
 
-  /// Submits [form] with [values] (its field names, hidden ones included).
-  /// [echo] is the visitor's line shown for the submission.
-  Future<void> submitForm(
-    ChatMessage form,
-    Map<String, dynamic> values, {
-    required String echo,
-  }) => _run(() async {
-    final channel = await _requireChannel();
-    await api.submitChatForm(channel, values);
-    if (!mounted) return;
-    state = state.copyWith(
-      submittedFormIds: {...state.submittedFormIds, form.messageId},
-      echoes: [
-        ...state.echoes,
-        TranscriptEntry(
-          id: 'echo_${DateTime.now().microsecondsSinceEpoch}_${_idCounter++}',
-          author: EntryAuthor.visitor,
-          text: echo,
-          createdAt: DateTime.now(),
-        ),
-      ],
-    );
-    _awaitReply();
-  });
+  /// Submits [form] with [values] (its field names, hidden ones included),
+  /// along with the form's message id (`formmessageid`) so the server keeps
+  /// the values on that message and marks it submitted. It sends the message
+  /// back, and the chat then shows what was submitted as text.
+  Future<void> submitForm(ChatMessage form, Map<String, dynamic> values) =>
+      _run(() async {
+        final channel = await _requireChannel();
+        await api.submitChatForm(channel, {
+          ...values,
+          'formmessageid': form.messageId,
+        });
+        if (!mounted) return;
+        state = state.copyWith(
+          submittedFormIds: {...state.submittedFormIds, form.messageId},
+        );
+        _awaitReply();
+      });
 
   Future<void> retry() async {
     final action = _retry;
