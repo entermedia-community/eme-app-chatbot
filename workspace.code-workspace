@@ -2,7 +2,7 @@
 	"folders": [
 		{
 			"name": "eme_chatbot",
-			"path": "../eme_chatbot",
+			"path": "../eme-app-chatbot",
 		},
 		{
 			"name": "eme_app_sdk",
